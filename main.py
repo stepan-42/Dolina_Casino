@@ -18,10 +18,24 @@ class Character:
         self.change_x = 0
         self.change_y = 0
 
+    @property
+    def left(self):
+        return self.center_x - self.size // 2
+
+    @property
+    def right(self):
+        return self.center_x + self.size // 2
+
+    @property
+    def bottom(self):
+        return self.center_y - self.size // 2
+
+    @property
+    def top(self):
+        return self.center_y + self.size // 2
+
     def draw(self):
-        left = self.center_x - self.size // 2
-        bottom = self.center_y - self.size // 2
-        arcade.draw_lbwh_rectangle_filled(left, bottom, self.size, self.size, self.color)
+        arcade.draw_lbwh_rectangle_filled(self.left, self.bottom, self.size, self.size, self.color)
 
     def update(self):
         self.center_x += self.change_x
@@ -58,6 +72,8 @@ class BaseScreen(arcade.View):
         self.rect = {
             'left': left,
             'bottom': bottom,
+            'right': left + RECT_WIDTH,
+            'top': bottom + RECT_HEIGHT,
             'width': RECT_WIDTH,
             'height': RECT_HEIGHT,
             'color': color
@@ -72,6 +88,29 @@ class BaseScreen(arcade.View):
             30,
             anchor_x="center"
         )
+
+    def check_collision(self):
+        char = self.character
+        rect = self.rect
+
+        if (char.right > rect['left'] and char.left < rect['right'] and
+                char.top > rect['bottom'] and char.bottom < rect['top']):
+
+            overlap_left = char.right - rect['left']
+            overlap_right = rect['right'] - char.left
+            overlap_bottom = char.top - rect['bottom']
+            overlap_top = rect['top'] - char.bottom
+
+            min_overlap = min(overlap_left, overlap_right, overlap_bottom, overlap_top)
+
+            if min_overlap == overlap_left:
+                char.center_x -= overlap_left
+            elif min_overlap == overlap_right:
+                char.center_x += overlap_right
+            elif min_overlap == overlap_bottom:
+                char.center_y -= overlap_bottom
+            elif min_overlap == overlap_top:
+                char.center_y += overlap_top
 
     def on_draw(self):
         self.clear()
@@ -91,25 +130,26 @@ class BaseScreen(arcade.View):
         self.character.draw()
 
     def on_key_press(self, key, modifiers):
-        if key == arcade.key.LEFT:
+        if key == arcade.key.A:
             self.character.change_x = -MOVEMENT_SPEED
-        elif key == arcade.key.RIGHT:
+        elif key == arcade.key.D:
             self.character.change_x = MOVEMENT_SPEED
-        elif key == arcade.key.UP:
+        elif key == arcade.key.W:
             self.character.change_y = MOVEMENT_SPEED
-        elif key == arcade.key.DOWN:
+        elif key == arcade.key.S:
             self.character.change_y = -MOVEMENT_SPEED
 
     def on_key_release(self, key, modifiers):
-        if key == arcade.key.LEFT or key == arcade.key.RIGHT:
+        if key == arcade.key.A or key == arcade.key.D:
             self.character.change_x = 0
-        elif key == arcade.key.UP or key == arcade.key.DOWN:
+        elif key == arcade.key.W or key == arcade.key.S:
             self.character.change_y = 0
 
     def on_update(self, delta_time):
         self.character.update()
+        self.check_collision()
 
-        if self.character.center_x >= SCREEN_WIDTH - self.character.size // 2:
+        if self.character.right >= SCREEN_WIDTH:
             if self.screen_number == 1:
                 next_screen = Screen2()
                 next_screen.character.center_x = self.character.size // 2
