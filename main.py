@@ -1,15 +1,59 @@
 import arcade
 import random
 import time
+import os
+import json
 
 SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 CHARACTER_SIZE, RECT_WIDTH, RECT_HEIGHT = 40, 200, 100
 MOVEMENT_SPEED = 5
+SAVE_DIR = "saves"
 
 
 class GameState:
     def __init__(self):
-        self.balance, self.current_bet, self.selected_game = 1000, 100, None
+        self.balance = 1000
+        self.current_bet = 100
+        self.selected_game = None
+        self.unlocked_screens = [1]
+        self.current_screen = 1
+
+    def save_to_slot(self, slot_num):
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        path = os.path.join(SAVE_DIR, f"slot{slot_num}.json")
+        data = {
+            "balance": self.balance,
+            "current_bet": self.current_bet,
+            "unlocked_screens": self.unlocked_screens,
+            "current_screen": self.current_screen
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def load_from_slot(self, slot_num):
+        path = os.path.join(SAVE_DIR, f"slot{slot_num}.json")
+        if not os.path.exists(path):
+            return False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.balance = data["balance"]
+            self.current_bet = data["current_bet"]
+            self.unlocked_screens = data["unlocked_screens"]
+            self.current_screen = data["current_screen"]
+            return True
+        except Exception:
+            return False
+
+    def unlock_screen(self, screen_num, cost):
+        if screen_num in self.unlocked_screens:
+            return True
+        if self.balance >= cost:
+            self.balance -= cost
+            if screen_num not in self.unlocked_screens:
+                self.unlocked_screens.append(screen_num)
+            return True
+        return False
 
 
 game_state = GameState()
@@ -43,13 +87,20 @@ class Character:
 
 class BaseScreen(arcade.View):
     COLORS = [None, arcade.color.GREEN, arcade.color.BLUE, arcade.color.YELLOW]
+    UNLOCK_COSTS = {1: 5000, 2: 25000, 3: 100000}
 
     def __init__(self, screen_num):
         super().__init__()
         self.screen_num = screen_num
+        game_state.current_screen = screen_num
+
         self.character = Character(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
         self.near_rect = self.near_exit = self.show_exit_prompt = False
         self.exit_side = None
+        self.purchase_prompt = False
+        self.purchase_cost = 0
+        self.purchase_target = None
+        self.purchase_error = False
 
         cx, cy = SCREEN_WIDTH // 2, SCREEN_HEIGHT - RECT_HEIGHT // 2 - 50
         self.rect = {
@@ -79,23 +130,33 @@ class BaseScreen(arcade.View):
             anchor_x="center"
         ) if screen_num in (1, 2) else None
         self.exit_hint = arcade.Text(
-            "Подойдите ближе к выходу", cx, 80,
+            "", cx, 80,
             arcade.color.YELLOW, 20,
             anchor_x="center"
         )
+        self.locked_hint = arcade.Text(
+            "", cx, 110,
+            arcade.color.RED, 22,
+            anchor_x="center"
+        )
         self.prompt = arcade.Text(
-            "Выйти?", cx, SCREEN_HEIGHT // 2 + 50,
+            "", SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 50,
             arcade.color.WHITE, 28,
             anchor_x="center"
         )
         self.yes_text = arcade.Text(
-            "ДА", cx - 75, SCREEN_HEIGHT // 2 - 45,
+            "ДА", SCREEN_WIDTH // 2 - 75, SCREEN_HEIGHT // 2 - 45,
             arcade.color.WHITE, 22,
             anchor_x="center"
         )
         self.no_text = arcade.Text(
-            "НЕТ", cx + 75, SCREEN_HEIGHT // 2 - 45,
+            "НЕТ", SCREEN_WIDTH // 2 + 75, SCREEN_HEIGHT // 2 - 45,
             arcade.color.WHITE, 22,
+            anchor_x="center"
+        )
+        self.purchase_error_text = arcade.Text(
+            "Недостаточно средств!", SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 80,
+            arcade.color.RED, 20,
             anchor_x="center"
         )
 
@@ -135,9 +196,25 @@ class BaseScreen(arcade.View):
         else:
             self.near_exit = False
 
+    def get_next_screen_info(self):
+        if self.exit_side == "right":
+            if self.screen_num == 1:
+                return 2, self.UNLOCK_COSTS[1]
+            elif self.screen_num == 2:
+                return 3, self.UNLOCK_COSTS[2]
+            elif self.screen_num == 3:
+                return 4, self.UNLOCK_COSTS[3]
+        elif self.exit_side == "left":
+            if self.screen_num == 2:
+                return 1, 0
+            elif self.screen_num == 3:
+                return 2, 0
+        return None, 0
+
     def draw_exit_prompt(self):
         if not self.show_exit_prompt:
             return
+
         cx, cy = SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
         arcade.draw_lbwh_rectangle_filled(cx - 175, cy - 90, 350, 180, arcade.color.DARK_GRAY)
         arcade.draw_lbwh_rectangle_outline(cx - 175, cy - 90, 350, 180, arcade.color.WHITE, 3)
@@ -145,21 +222,45 @@ class BaseScreen(arcade.View):
         arcade.draw_lbwh_rectangle_outline(cx - 125, cy - 65, 110, 55, arcade.color.WHITE, 2)
         arcade.draw_lbwh_rectangle_filled(cx + 20, cy - 65, 110, 55, arcade.color.RED)
         arcade.draw_lbwh_rectangle_outline(cx + 20, cy - 65, 110, 55, arcade.color.WHITE, 2)
+
+        if self.purchase_prompt:
+            if self.purchase_error:
+                self.prompt.text = "Недостаточно средств!"
+                self.prompt.color = arcade.color.RED
+            else:
+                self.prompt.text = f"Купить проход за {self.purchase_cost:,}?"
+                self.prompt.color = arcade.color.YELLOW
+        else:
+            self.prompt.text = "Выйти?"
+            self.prompt.color = arcade.color.WHITE
+
         self.prompt.draw()
         self.yes_text.draw()
         self.no_text.draw()
+
+        if self.purchase_error:
+            self.purchase_error_text.draw()
 
     def on_draw(self):
         self.clear()
         arcade.set_background_color(arcade.color.DARK_SLATE_GRAY)
         self.title.draw()
-        self.balance_text.text = f"Баланс: {game_state.balance}"
+        self.balance_text.text = f"Баланс: {game_state.balance:,}"
         self.balance_text.draw()
 
-        if self.screen_num in (1, 2) and self.near_rect and self.interaction_hint:
+        next_screen, cost = self.get_next_screen_info()
+        if self.near_exit:
+            if next_screen is not None and next_screen not in game_state.unlocked_screens:
+                self.locked_hint.text = f"ЗАКРЫТО! Купить за {cost:,} (E)"
+                self.locked_hint.draw()
+            elif self.exit_side == "right":
+                self.exit_hint.text = "Выход вправо (подойдите ближе)"
+                self.exit_hint.draw()
+            else:
+                self.exit_hint.text = "Выход влево (подойдите ближе)"
+                self.exit_hint.draw()
+        elif self.screen_num in (1, 2) and self.near_rect and self.interaction_hint:
             self.interaction_hint.draw()
-        if self.near_exit and not self.show_exit_prompt:
-            self.exit_hint.draw()
 
         arcade.draw_lbwh_rectangle_outline(
             self.rect['left'], self.rect['bottom'],
@@ -171,6 +272,14 @@ class BaseScreen(arcade.View):
 
     def on_key_press(self, key, _):
         if self.show_exit_prompt:
+            if key == arcade.key.ESCAPE:
+                self.show_exit_prompt = False
+                self.purchase_prompt = False
+                self.purchase_error = False
+                if self.exit_side == "left":
+                    self.character.center_x = 60
+                else:
+                    self.character.center_x = SCREEN_WIDTH - 60
             return
 
         if key == arcade.key.A:
@@ -181,24 +290,59 @@ class BaseScreen(arcade.View):
             self.character.change_y = MOVEMENT_SPEED
         elif key == arcade.key.S:
             self.character.change_y = -MOVEMENT_SPEED
-        elif key == arcade.key.E and self.near_rect and self.screen_num in (1, 2):
-            game = "clicker" if self.screen_num == 1 else "slots"
-            self.window.show_view(BetScreen(True, game))
+        elif key == arcade.key.E:
+            if self.near_rect and self.screen_num in (1, 2):
+                game = "clicker" if self.screen_num == 1 else "slots"
+                self.window.show_view(BetScreen(True, game))
+            elif self.near_exit:
+                next_screen, cost = self.get_next_screen_info()
+                if next_screen is not None and next_screen not in game_state.unlocked_screens:
+                    if game_state.unlock_screen(next_screen, cost):
+                        self.perform_exit()
+                    else:
+                        self.show_exit_prompt = True
+                        self.purchase_prompt = True
+                        self.purchase_cost = cost
+                        self.purchase_target = next_screen
+                        self.purchase_error = True
+                        self.character.change_x = 0
+                        self.character.change_y = 0
+        elif key == arcade.key.ESCAPE:
+            self.window.show_view(MainMenuScreen())
 
     def perform_exit(self):
         if self.exit_side == "right":
-            next_cls = {1: Screen2, 2: Screen3, 3: CutsceneScreen}.get(self.screen_num)
-        else:
-            next_cls = {2: Screen1, 3: Screen2}.get(self.screen_num)
-
-        if next_cls:
-            nxt = next_cls()
-            if self.exit_side == "right":
-                nxt.character.center_x = self.character.size // 2 + 50
+            if self.screen_num == 1:
+                next_cls = Screen2
+                next_screen_num = 2
+            elif self.screen_num == 2:
+                next_cls = Screen3
+                next_screen_num = 3
+            elif self.screen_num == 3:
+                next_cls = CutsceneScreen
+                next_screen_num = 4
             else:
-                nxt.character.center_x = SCREEN_WIDTH - self.character.size // 2 - 50
-            nxt.character.center_y = self.character.center_y
-            self.window.show_view(nxt)
+                return
+        else:
+            if self.screen_num == 2:
+                next_cls = Screen1
+                next_screen_num = 1
+            elif self.screen_num == 3:
+                next_cls = Screen2
+                next_screen_num = 2
+            else:
+                return
+
+        if next_screen_num not in game_state.unlocked_screens and next_screen_num != 4:
+            return
+
+        nxt = next_cls()
+        if self.exit_side == "right":
+            nxt.character.center_x = self.character.size // 2 + 50
+        else:
+            nxt.character.center_x = SCREEN_WIDTH - self.character.size // 2 - 50
+        nxt.character.center_y = self.character.center_y
+        self.window.show_view(nxt)
 
     def on_mouse_press(self, x, y, button, _):
         if not (self.show_exit_prompt and button == arcade.MOUSE_BUTTON_LEFT):
@@ -210,10 +354,21 @@ class BaseScreen(arcade.View):
         btn_bottom, btn_top = cy - 65, cy - 10
 
         if yes_left <= x <= yes_right and btn_bottom <= y <= btn_top:
-            self.perform_exit()
+            if self.purchase_prompt:
+                if game_state.unlock_screen(self.purchase_target, self.purchase_cost):
+                    self.perform_exit()
+                else:
+                    self.purchase_error = True
+            else:
+                self.perform_exit()
         elif no_left <= x <= no_right and btn_bottom <= y <= btn_top:
             self.show_exit_prompt = False
-            self.character.center_x = 60 if self.exit_side == "left" else SCREEN_WIDTH - 60
+            self.purchase_prompt = False
+            self.purchase_error = False
+            if self.exit_side == "left":
+                self.character.center_x = 60
+            else:
+                self.character.center_x = SCREEN_WIDTH - 60
 
     def on_key_release(self, key, _):
         if self.show_exit_prompt:
@@ -234,9 +389,27 @@ class BaseScreen(arcade.View):
 
         if self.near_exit:
             et = 5
-            if (self.exit_side == "right" and self.character.right >= SCREEN_WIDTH - et) or \
-                    (self.exit_side == "left" and self.character.left <= et):
-                self.show_exit_prompt = True
+            touching_edge = (
+                    (self.exit_side == "right" and self.character.right >= SCREEN_WIDTH - et) or
+                    (self.exit_side == "left" and self.character.left <= et)
+            )
+
+            if touching_edge:
+                next_screen, cost = self.get_next_screen_info()
+                if next_screen is None:
+                    return
+
+                if next_screen in game_state.unlocked_screens:
+                    self.show_exit_prompt = True
+                    self.purchase_prompt = False
+                    self.purchase_error = False
+                elif cost > 0:
+                    self.show_exit_prompt = True
+                    self.purchase_prompt = True
+                    self.purchase_cost = cost
+                    self.purchase_target = next_screen
+                    self.purchase_error = False
+
                 self.character.change_x = 0
                 self.character.change_y = 0
 
@@ -291,7 +464,7 @@ class ClickerGameScreen(arcade.View):
         arcade.set_background_color(arcade.color.DARK_BLUE)
         self.title.draw()
         self.instruction.draw()
-        self.bet_text.text = f"Ставка: {game_state.current_bet}"
+        self.bet_text.text = f"Ставка: {game_state.current_bet:,}"
         self.bet_text.draw()
 
         for y in [self.player_ball.center_y, self.ai_ball_top.center_y, self.ai_ball_bottom.center_y]:
@@ -335,11 +508,13 @@ class ClickerGameScreen(arcade.View):
             self.game_over = True
             game_state.balance += game_state.current_bet * 2
             self.result_title.text, self.result_title.color = "ПОБЕДА!", arcade.color.GREEN
-            self.result_amount.text, self.result_amount.color = f"+{game_state.current_bet * 2}", arcade.color.GOLD
+            self.result_amount.text = f"+{game_state.current_bet * 2:,}"
+            self.result_amount.color = arcade.color.GOLD
         elif self.ai_ball_top.center_x >= self.finish_line or self.ai_ball_bottom.center_x >= self.finish_line:
             self.game_over = True
             self.result_title.text, self.result_title.color = "ПРОИГРЫШ", arcade.color.RED
-            self.result_amount.text, self.result_amount.color = f"-{game_state.current_bet}", arcade.color.RED
+            self.result_amount.text = f"-{game_state.current_bet:,}"
+            self.result_amount.color = arcade.color.RED
 
     def on_key_press(self, key, _):
         if self.game_over:
@@ -362,35 +537,40 @@ class TextureScreen(arcade.View):
         self.exit_hint = arcade.Text("E - выход | ЛКМ - крутить", cx, SCREEN_HEIGHT // 2 - 60, arcade.color.YELLOW, 20,
                                      anchor_x="center")
         self.message = None
+        self.message_timer = 0
 
     def on_draw(self):
         self.clear()
         arcade.set_background_color(arcade.color.BLACK)
-        self.balance_text.text = f"Баланс: {game_state.balance}"
+        self.balance_text.text = f"Баланс: {game_state.balance:,}"
         self.balance_text.draw()
-        self.bet_text.text = f"Ставка: {game_state.current_bet}"
+        self.bet_text.text = f"Ставка: {game_state.current_bet:,}"
         self.bet_text.draw()
         self.text.draw()
         self.coeff.draw()
         self.change_hint.draw()
         self.exit_hint.draw()
-        if self.message:
+        if self.message and self.message_timer > 0:
             self.message.draw()
+
+    def on_update(self, delta_time):
+        if self.message_timer > 0:
+            self.message_timer -= delta_time
+            if self.message_timer <= 0:
+                self.message = None
 
     def on_mouse_press(self, x, y, button, _):
         if button != arcade.MOUSE_BUTTON_LEFT:
             return
-        if game_state.current_bet <= game_state.balance:
-            self.window.show_view(AnimationScreen())
-        else:
-            self.message = arcade.Text("Недостаточно средств!", SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 100,
-                                       arcade.color.RED, 24, anchor_x="center")
+        self.window.show_view(AnimationScreen())
 
     def on_key_press(self, key, _):
         if key == arcade.key.E:
             self.window.show_view(Screen2())
         elif key == arcade.key.B:
             self.window.show_view(BetScreen(False, "slots"))
+        elif key == arcade.key.ESCAPE:
+            self.window.show_view(MainMenuScreen())
 
 
 class BetScreen(arcade.View):
@@ -400,6 +580,7 @@ class BetScreen(arcade.View):
         self.game_type = game_type
         self.bet_amount = str(game_state.current_bet)
         self.message = None
+        self.message_timer = 0
         cx = SCREEN_WIDTH // 2
 
         self.title = arcade.Text("Установите ставку", cx, SCREEN_HEIGHT // 2 + 120, arcade.color.WHITE, 30,
@@ -420,7 +601,7 @@ class BetScreen(arcade.View):
         arcade.draw_lbwh_rectangle_outline(cx - 225, SCREEN_HEIGHT // 2 - 150, 450, 350, arcade.color.WHITE, 3)
 
         self.title.draw()
-        self.balance.text = f"Ваш баланс: {game_state.balance}"
+        self.balance.text = f"Ваш баланс: {game_state.balance:,}"
         self.balance.draw()
         self.bet_display.text = self.bet_amount or "0"
         self.bet_display.draw()
@@ -435,8 +616,14 @@ class BetScreen(arcade.View):
             self.back.draw()
 
         self.hint.draw()
-        if self.message:
+        if self.message and self.message_timer > 0:
             self.message.draw()
+
+    def on_update(self, delta_time):
+        if self.message_timer > 0:
+            self.message_timer -= delta_time
+            if self.message_timer <= 0:
+                self.message = None
 
     def on_mouse_press(self, x, y, button, _):
         if button != arcade.MOUSE_BUTTON_LEFT:
@@ -445,7 +632,7 @@ class BetScreen(arcade.View):
 
         if cx - 120 <= x <= cx + 120 and SCREEN_HEIGHT // 2 - 70 <= y <= SCREEN_HEIGHT // 2 - 10:
             self.start_game()
-        elif self.back and cx - 100 <= x <= cx + 100 and SCREEN_HEIGHT // 2 - 120 <= y <= SCREEN_HEIGHT // 2 - 70:
+        elif self.back and cx - 100 <= x <= cx + 100 and SCREEN_HEIGHT // 2 - 140 <= y <= SCREEN_HEIGHT // 2 - 90:
             if self.show_back:
                 target = Screen1() if self.game_type == "clicker" else Screen2()
             else:
@@ -461,10 +648,8 @@ class BetScreen(arcade.View):
                 msg = "Недостаточно средств"
             else:
                 game_state.current_bet = bet
-                game_state.selected_game = self.game_type
-
+                game_state.balance -= bet
                 if self.game_type == "clicker":
-                    game_state.balance -= bet
                     self.window.show_view(ClickerGameScreen())
                 else:
                     self.window.show_view(AnimationScreen())
@@ -472,8 +657,9 @@ class BetScreen(arcade.View):
         except ValueError:
             msg = "Введите корректное число"
 
-        self.message = arcade.Text(msg, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 180,
+        self.message = arcade.Text(msg, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 210,
                                    arcade.color.RED, 20, anchor_x="center")
+        self.message_timer = 3.0
 
     def on_key_press(self, key, _):
         if key == arcade.key.ENTER:
@@ -503,7 +689,7 @@ class AnimationScreen(arcade.View):
     def on_draw(self):
         self.clear()
         arcade.set_background_color(arcade.color.BLACK)
-        self.balance.text = f"Баланс: {game_state.balance}"
+        self.balance.text = f"Баланс: {game_state.balance:,}"
         self.balance.draw()
         self.text.draw()
 
@@ -525,7 +711,7 @@ class NumbersScreen(arcade.View):
 
         self.balance = arcade.Text("", SCREEN_WIDTH - 10, SCREEN_HEIGHT - 30, arcade.color.GOLD, 24, anchor_x="right")
         self.exit_hint = arcade.Text(
-            "E - выход | B - изменить ставку\nЛКМ - крутить снова",
+            "E - выход | B - изменить ставку | ЛКМ - крутить снова",
             cx, 50, arcade.color.YELLOW, 20, anchor_x="center"
         )
         self.check_win()
@@ -535,17 +721,16 @@ class NumbersScreen(arcade.View):
         if self.numbers[0] == self.numbers[1] == self.numbers[2]:
             win = game_state.current_bet * 25
             game_state.balance += win
-            self.result = arcade.Text(f"Вы выиграли {win}!", cx, SCREEN_HEIGHT // 2 + 100,
+            self.result = arcade.Text(f"Вы выиграли {win:,}!", cx, SCREEN_HEIGHT // 2 + 100,
                                       arcade.color.GREEN, 24, anchor_x="center")
         else:
-            game_state.balance -= game_state.current_bet
-            self.result = arcade.Text(f"Вы проиграли {game_state.current_bet}!", cx, SCREEN_HEIGHT // 2 + 100,
+            self.result = arcade.Text(f"Вы проиграли {game_state.current_bet:,}!", cx, SCREEN_HEIGHT // 2 + 100,
                                       arcade.color.RED, 24, anchor_x="center")
 
     def on_draw(self):
         self.clear()
         arcade.set_background_color(arcade.color.BLACK)
-        self.balance.text = f"Баланс: {game_state.balance}"
+        self.balance.text = f"Баланс: {game_state.balance:,}"
         self.balance.draw()
 
         for i in range(3):
@@ -559,6 +744,7 @@ class NumbersScreen(arcade.View):
     def on_mouse_press(self, x, y, button, _):
         if button == arcade.MOUSE_BUTTON_LEFT:
             if game_state.current_bet <= game_state.balance:
+                game_state.balance -= game_state.current_bet
                 self.window.show_view(AnimationScreen())
             else:
                 self.result = arcade.Text("Недостаточно средств для ставки!", SCREEN_WIDTH // 2,
@@ -570,31 +756,232 @@ class NumbersScreen(arcade.View):
             self.window.show_view(Screen2())
         elif key == arcade.key.B:
             self.window.show_view(BetScreen(False, "slots"))
+        elif key == arcade.key.ESCAPE:
+            self.window.show_view(MainMenuScreen())
 
 
 class CutsceneScreen(arcade.View):
     def __init__(self):
         super().__init__()
-        self.text = arcade.Text("тут будет катсцена", SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2,
-                                arcade.color.WHITE, 30, anchor_x="center")
+        self.texts = [
+            arcade.Text("Поздравляем!", SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 60,
+                        arcade.color.GOLD, 36, anchor_x="center"),
+            arcade.Text("Вы прошли все испытания казино Ларисы Долиной!",
+                        SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20,
+                        arcade.color.WHITE, 24, anchor_x="center"),
+            arcade.Text("Ваш финальный баланс: ", SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 30,
+                        arcade.color.YELLOW, 28, anchor_x="center"),
+            arcade.Text(f"{game_state.balance:,} монет", SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 70,
+                        arcade.color.GOLD, 32, anchor_x="center"),
+            arcade.Text("Нажмите ПРОБЕЛ чтобы начать новую игру",
+                        SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 120,
+                        arcade.color.WHITE, 20, anchor_x="center")
+        ]
 
     def on_draw(self):
         self.clear()
         arcade.set_background_color(arcade.color.BLACK)
-        self.text.draw()
+        for text in self.texts:
+            text.draw()
 
     def on_key_press(self, key, _):
-        if key == arcade.key.ESCAPE:
-            s = Screen1()
-            s.character.center_x = SCREEN_WIDTH // 2
-            s.character.center_y = SCREEN_HEIGHT // 2
-            self.window.show_view(s)
+        if key == arcade.key.SPACE:
+            game_state.balance = 1000
+            game_state.current_bet = 100
+            game_state.unlocked_screens = [1]
+            game_state.current_screen = 1
+            self.window.show_view(Screen1())
+        elif key == arcade.key.ESCAPE:
+            self.window.show_view(MainMenuScreen())
+
+
+class SaveSelectScreen(arcade.View):
+    def __init__(self, mode):
+        super().__init__()
+        self.mode = mode
+        self.slots_info = []
+        cx = SCREEN_WIDTH // 2
+
+        for i in range(1, 4):
+            path = os.path.join(SAVE_DIR, f"slot{i}.json")
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        balance = data.get('balance', 0)
+                        mtime = os.path.getmtime(path)
+                        timestamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+                        self.slots_info.append((i, True, balance, timestamp))
+                except:
+                    self.slots_info.append((i, False, 0, ""))
+            else:
+                self.slots_info.append((i, False, 0, ""))
+
+        title_text = "ЗАГРУЗИТЬ ИГРУ" if mode == "load" else "СОХРАНИТЬ ИГРУ"
+        self.title = arcade.Text(title_text, cx, SCREEN_HEIGHT - 60,
+                                 arcade.color.GOLD, 36, anchor_x="center", bold=True)
+        self.slot_texts = []
+        y_start = SCREEN_HEIGHT - 150
+        for i, (slot_num, exists, balance, timestamp) in enumerate(self.slots_info):
+            y = y_start - i * 100
+            if exists:
+                text = f"Слот {slot_num}: {balance:,} монет ({timestamp})"
+                color = arcade.color.WHITE
+            else:
+                text = f"Слот {slot_num}: пустой"
+                color = arcade.color.GRAY
+            self.slot_texts.append(arcade.Text(text, cx, y, color, 24, anchor_x="center"))
+
+        self.back_text = arcade.Text("НАЗАД", cx, 80, arcade.color.RED, 28, anchor_x="center")
+        self.message = None
+        self.message_timer = 0
+
+    def on_draw(self):
+        self.clear()
+        arcade.set_background_color(arcade.color.DARK_SLATE_GRAY)
+        self.title.draw()
+        for text in self.slot_texts:
+            text.draw()
+        self.back_text.draw()
+        if self.message and self.message_timer > 0:
+            self.message.draw()
+
+    def on_update(self, delta_time):
+        if self.message_timer > 0:
+            self.message_timer -= delta_time
+            if self.message_timer <= 0:
+                self.message = None
+
+    def on_mouse_press(self, x, y, button, _):
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+
+        cx = SCREEN_WIDTH // 2
+        y_start = SCREEN_HEIGHT - 150
+
+        for i, (slot_num, exists, balance, timestamp) in enumerate(self.slots_info):
+            text_y = y_start - i * 100
+            text_width = len(self.slot_texts[i].text) * 14
+            left = cx - text_width // 2 - 20
+            right = cx + text_width // 2 + 20
+            top = text_y + 20
+            bottom = text_y - 20
+
+            if left <= x <= right and bottom <= y <= top:
+                if self.mode == "load":
+                    if exists:
+                        if game_state.load_from_slot(slot_num):
+                            if game_state.current_screen == 1:
+                                view = Screen1()
+                            elif game_state.current_screen == 2:
+                                view = Screen2()
+                            elif game_state.current_screen == 3:
+                                view = Screen3()
+                            else:
+                                view = CutsceneScreen()
+                            view.character.center_x = SCREEN_WIDTH // 2
+                            view.character.center_y = SCREEN_HEIGHT // 2
+                            self.window.show_view(view)
+                            return
+                        else:
+                            self.show_message("Ошибка загрузки!", arcade.color.RED)
+                    else:
+                        self.show_message("Слот пустой!", arcade.color.RED)
+                else:
+                    game_state.save_to_slot(slot_num)
+                    self.show_message(f"Сохранено в слот {slot_num}!", arcade.color.GREEN)
+                    return
+
+        back_width = len(self.back_text.text) * 18
+        back_left = cx - back_width // 2 - 20
+        back_right = cx + back_width // 2 + 20
+        back_top = 100
+        back_bottom = 60
+
+        if back_left <= x <= back_right and back_bottom <= y <= back_top:
+            self.window.show_view(MainMenuScreen())
+
+    def show_message(self, text, color):
+        self.message = arcade.Text(text, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 150,
+                                   color, 24, anchor_x="center")
+        self.message_timer = 3.0
+
+
+class MainMenuScreen(arcade.View):
+    def __init__(self):
+        super().__init__()
+        cx, cy = SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
+        self.title = arcade.Text("КАЗИНО ЛАРИСЫ ДОЛИНОЙ", cx, SCREEN_HEIGHT - 80,
+                                 arcade.color.GOLD, 42, anchor_x="center", bold=True)
+        self.options = [
+            arcade.Text("НОВАЯ ИГРА", cx, cy + 90, arcade.color.WHITE, 32, anchor_x="center"),
+            arcade.Text("ЗАГРУЗИТЬ ИГРУ", cx, cy + 30, arcade.color.WHITE, 32, anchor_x="center"),
+            arcade.Text("СОХРАНИТЬ ИГРУ", cx, cy - 30, arcade.color.WHITE, 32, anchor_x="center"),
+            arcade.Text("ВЫХОД", cx, cy - 90, arcade.color.WHITE, 32, anchor_x="center")
+        ]
+        self.message = None
+        self.message_timer = 0
+
+    def on_draw(self):
+        self.clear()
+        arcade.set_background_color(arcade.color.DARK_SLATE_GRAY)
+        self.title.draw()
+        for option in self.options:
+            option.draw()
+        if self.message and self.message_timer > 0:
+            self.message.draw()
+
+    def on_update(self, delta_time):
+        if self.message_timer > 0:
+            self.message_timer -= delta_time
+            if self.message_timer <= 0:
+                self.message = None
+
+    def on_mouse_press(self, x, y, button, _):
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+
+        cx = SCREEN_WIDTH // 2
+        for i, option in enumerate(self.options):
+            text_width = len(option.text) * 18
+            left = cx - text_width // 2 - 20
+            right = cx + text_width // 2 + 20
+            top = option.y + 30
+            bottom = option.y - 5
+
+            if left <= x <= right and bottom <= y <= top:
+                if i == 0:
+                    game_state.balance = 1000
+                    game_state.current_bet = 100
+                    game_state.unlocked_screens = [1]
+                    game_state.current_screen = 1
+                    self.window.show_view(Screen1())
+                elif i == 1:
+                    self.window.show_view(SaveSelectScreen("load"))
+                elif i == 2:
+                    self.window.show_view(SaveSelectScreen("save"))
+                elif i == 3:
+                    self.window.close()
+                break
+
+    def on_key_press(self, key, _):
+        if key == arcade.key.ENTER:
+            game_state.balance = 1000
+            game_state.current_bet = 100
+            game_state.unlocked_screens = [1]
+            game_state.current_screen = 1
+            self.window.show_view(Screen1())
+        elif key == arcade.key.ESCAPE:
+            self.window.close()
 
 
 class GameWindow(arcade.Window):
     def __init__(self):
         super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, "казино ларисы долиной")
-        self.show_view(Screen1())
+        self.show_view(MainMenuScreen())
+
+    def on_close(self):
+        super().on_close()
 
 
 def main():
