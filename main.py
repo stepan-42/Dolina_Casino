@@ -3,6 +3,7 @@ import random
 import time
 import os
 import json
+import math
 
 SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 CHARACTER_SIZE, RECT_WIDTH, RECT_HEIGHT = 40, 200, 100
@@ -128,7 +129,7 @@ class BaseScreen(arcade.View):
             "Нажми E у прямоугольника", cx, 50,
             arcade.color.YELLOW, 20,
             anchor_x="center"
-        ) if screen_num in (1, 2) else None
+        ) if screen_num in (1, 2, 3) else None
         self.exit_hint = arcade.Text(
             "", cx, 80,
             arcade.color.YELLOW, 20,
@@ -259,7 +260,7 @@ class BaseScreen(arcade.View):
             else:
                 self.exit_hint.text = "Выход влево (подойдите ближе)"
                 self.exit_hint.draw()
-        elif self.screen_num in (1, 2) and self.near_rect and self.interaction_hint:
+        elif self.screen_num in (1, 2, 3) and self.near_rect and self.interaction_hint:
             self.interaction_hint.draw()
 
         arcade.draw_lbwh_rectangle_outline(
@@ -291,9 +292,13 @@ class BaseScreen(arcade.View):
         elif key == arcade.key.S:
             self.character.change_y = -MOVEMENT_SPEED
         elif key == arcade.key.E:
-            if self.near_rect and self.screen_num in (1, 2):
-                game = "clicker" if self.screen_num == 1 else "slots"
-                self.window.show_view(BetScreen(True, game))
+            if self.near_rect and self.screen_num in (1, 2, 3):
+                if self.screen_num == 1:
+                    self.window.show_view(BetScreen(True, "clicker"))
+                elif self.screen_num == 2:
+                    self.window.show_view(BetScreen(True, "slots"))
+                elif self.screen_num == 3:
+                    self.window.show_view(BetScreen(True, "fortune"))
             elif self.near_exit:
                 next_screen, cost = self.get_next_screen_info()
                 if next_screen is not None and next_screen not in game_state.unlocked_screens:
@@ -461,7 +466,7 @@ class ClickerGameScreen(arcade.View):
 
     def on_draw(self):
         self.clear()
-        arcade.set_background_color(arcade.color.DARK_BLUE)
+        arcade.set_background_color(arcade.color.BLACK)
         self.title.draw()
         self.instruction.draw()
         self.bet_text.text = f"Ставка: {game_state.current_bet:,}"
@@ -573,6 +578,198 @@ class TextureScreen(arcade.View):
             self.window.show_view(MainMenuScreen())
 
 
+class FortuneWheelScreen(arcade.View):
+    def __init__(self):
+        super().__init__()
+        self.wheel_center_x = SCREEN_WIDTH // 2
+        self.wheel_center_y = SCREEN_HEIGHT // 2
+        self.radius = 200
+        self.angle = 0
+        self.spinning = False
+        self.spin_speed = 0
+        self.target_speed = 0
+        self.result = None
+        self.game_over = False
+        self.win_amount = 0
+        self.spin_direction = 1
+        self.arrow_angle = 90  # Стрелка всегда на 90 градусах (сверху)
+
+        multipliers = [50, 20, 10, 5, 3, 2, 1.5, 0]
+        colors = [
+            arcade.color.RED,
+            arcade.color.ORANGE,
+            arcade.color.YELLOW,
+            arcade.color.GREEN,
+            arcade.color.BLUE,
+            arcade.color.PURPLE,
+            arcade.color.PINK,
+            arcade.color.GRAY
+        ]
+
+        total_inverse = sum(1 / (m + 1) for m in multipliers)
+        self.sectors = []
+        current_angle = 0
+
+        for i in range(8):
+            multiplier = multipliers[i]
+            weight = 1 / (multiplier + 1)
+            sector_angle = (weight / total_inverse) * 360
+
+            self.sectors.append({
+                "color": colors[i],
+                "multiplier": multiplier,
+                "text": f"x{multiplier}" if multiplier > 0 else "0",
+                "base_start_angle": current_angle,
+                "base_end_angle": current_angle + sector_angle,
+                "angle_range": sector_angle
+            })
+
+            current_angle += sector_angle
+
+        self.title = arcade.Text("КОЛЕСО ФОРТУНЫ", SCREEN_WIDTH // 2, SCREEN_HEIGHT - 40,
+                                 arcade.color.GOLD, 36, anchor_x="center")
+        self.balance_text = arcade.Text("", SCREEN_WIDTH - 10, SCREEN_HEIGHT - 80,
+                                        arcade.color.YELLOW, 24, anchor_x="right")
+        self.bet_text = arcade.Text("", SCREEN_WIDTH // 2, SCREEN_HEIGHT - 80,
+                                    arcade.color.YELLOW, 24, anchor_x="center")
+        self.instruction = arcade.Text("Нажмите ЛКМ чтобы крутить колесо", SCREEN_WIDTH // 2, 50,
+                                       arcade.color.WHITE, 20, anchor_x="center")
+        self.result_text = arcade.Text("", SCREEN_WIDTH // 2, 100,
+                                       arcade.color.WHITE, 28, anchor_x="center")
+        self.exit_hint = arcade.Text("Нажмите E чтобы вернуться", SCREEN_WIDTH // 2, 20,
+                                     arcade.color.YELLOW, 18, anchor_x="center")
+
+    def on_draw(self):
+        self.clear()
+        arcade.set_background_color(arcade.color.BLACK)
+
+        for sector in self.sectors:
+            start_angle = self.angle + sector["base_start_angle"]
+            end_angle = self.angle + sector["base_end_angle"]
+
+            arcade.draw_arc_filled(self.wheel_center_x, self.wheel_center_y, self.radius, self.radius,
+                                   sector["color"], start_angle, end_angle)
+
+            arcade.draw_arc_outline(self.wheel_center_x, self.wheel_center_y, self.radius, self.radius,
+                                    arcade.color.BLACK, start_angle, end_angle, 3)
+
+            sector_center_angle = start_angle + sector["angle_range"] / 2
+
+            text_angle_rad = math.radians(sector_center_angle)
+            text_x = self.wheel_center_x + (self.radius * 0.65) * math.cos(text_angle_rad)
+            text_y = self.wheel_center_y + (self.radius * 0.65) * math.sin(text_angle_rad)
+
+            arcade.draw_text(sector["text"], text_x, text_y,
+                             arcade.color.WHITE,
+                             20, anchor_x="center", anchor_y="center", bold=True,
+                             rotation=-sector_center_angle)
+
+        arcade.draw_circle_filled(self.wheel_center_x, self.wheel_center_y, 25, arcade.color.WHITE)
+        arcade.draw_circle_outline(self.wheel_center_x, self.wheel_center_y, 25, arcade.color.BLACK, 3)
+
+        arrow_x, arrow_y = self.wheel_center_x, self.wheel_center_y + self.radius + 30
+
+        arrow_angle_rad = math.radians(self.arrow_angle)
+        arrow_tip_x = self.wheel_center_x + (self.radius - 60) * math.cos(arrow_angle_rad)
+        arrow_tip_y = self.wheel_center_y + (self.radius - 60) * math.sin(arrow_angle_rad)
+
+        arrow_left_angle = math.radians(self.arrow_angle - 15)
+        arrow_left_x = self.wheel_center_x + (self.radius * 0.9) * math.cos(arrow_left_angle)
+        arrow_left_y = self.wheel_center_y + (self.radius * 0.9) * math.sin(arrow_left_angle)
+
+        arrow_right_angle = math.radians(self.arrow_angle + 15)
+        arrow_right_x = self.wheel_center_x + (self.radius * 0.9) * math.cos(arrow_right_angle)
+        arrow_right_y = self.wheel_center_y + (self.radius * 0.9) * math.sin(arrow_right_angle)
+
+        arcade.draw_triangle_filled(
+            arrow_tip_x, arrow_tip_y,
+            arrow_left_x, arrow_left_y,
+            arrow_right_x, arrow_right_y,
+            arcade.color.RED
+        )
+
+        self.title.draw()
+        self.balance_text.text = f"Баланс: {game_state.balance:,}"
+        self.balance_text.draw()
+        self.bet_text.text = f"Ставка: {game_state.current_bet:,}"
+        self.bet_text.draw()
+        self.instruction.draw()
+
+        if self.game_over:
+            self.result_text.draw()
+
+        self.exit_hint.draw()
+
+    def on_mouse_press(self, x, y, button, _):
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+
+        if self.game_over:
+            self.window.show_view(BetScreen(True, "fortune"))
+            return
+
+        if not self.spinning:
+            self.spinning = True
+            self.spin_direction = random.choice([-1, 1])
+            self.target_speed = random.uniform(20, 35) * self.spin_direction
+            self.spin_speed = self.target_speed
+            self.result = None
+            self.game_over = False
+
+    def on_update(self, delta_time):
+        if self.spinning:
+            self.angle += self.spin_speed
+
+            if abs(self.spin_speed) > 0.3:
+                self.spin_speed *= 0.994
+            else:
+                self.spin_speed = 0
+                self.spinning = False
+                self.game_over = True
+                self.calculate_result()
+
+    def calculate_result(self):
+        normalized_angle = (self.angle % 360)
+
+        selected_sector = None
+
+        for sector in self.sectors:
+            start_angle = (sector["base_start_angle"] + normalized_angle) % 360
+            end_angle = (sector["base_end_angle"] + normalized_angle) % 360
+
+            arrow_point_angle = self.arrow_angle % 360
+
+            if start_angle <= end_angle:
+                if start_angle <= arrow_point_angle < end_angle:
+                    selected_sector = sector
+                    break
+            else:
+                if arrow_point_angle >= start_angle or arrow_point_angle < end_angle:
+                    selected_sector = sector
+                    break
+
+        if selected_sector:
+            multiplier = selected_sector["multiplier"]
+            self.win_amount = int(game_state.current_bet * multiplier)
+            game_state.balance += self.win_amount
+
+            if multiplier == 0:
+                self.result_text.text = f"Вы проиграли! Выигрыш: 0"
+                self.result_text.color = arcade.color.RED
+            else:
+                self.result_text.text = f"Вы выиграли {self.win_amount:,}! Множитель: x{multiplier}"
+                self.result_text.color = arcade.color.GREEN
+        else:
+            self.result_text.text = "Ошибка определения результата!"
+            self.result_text.color = arcade.color.ORANGE
+
+    def on_key_press(self, key, _):
+        if key == arcade.key.E:
+            self.window.show_view(Screen3())
+        elif key == arcade.key.B:
+            self.window.show_view(BetScreen(True, "fortune"))
+        elif key == arcade.key.ESCAPE:
+            self.window.show_view(MainMenuScreen())
 class BetScreen(arcade.View):
     def __init__(self, show_back, game_type):
         super().__init__()
@@ -634,7 +831,12 @@ class BetScreen(arcade.View):
             self.start_game()
         elif self.back and cx - 100 <= x <= cx + 100 and SCREEN_HEIGHT // 2 - 140 <= y <= SCREEN_HEIGHT // 2 - 90:
             if self.show_back:
-                target = Screen1() if self.game_type == "clicker" else Screen2()
+                if self.game_type == "clicker":
+                    target = Screen1()
+                elif self.game_type == "slots":
+                    target = Screen2()
+                elif self.game_type == "fortune":
+                    target = Screen3
             else:
                 target = TextureScreen()
             self.window.show_view(target)
@@ -651,8 +853,10 @@ class BetScreen(arcade.View):
                 game_state.balance -= bet
                 if self.game_type == "clicker":
                     self.window.show_view(ClickerGameScreen())
-                else:
+                elif self.game_type == "slots":
                     self.window.show_view(AnimationScreen())
+                elif self.game_type == "fortune":
+                    self.window.show_view(FortuneWheelScreen())
                 return
         except ValueError:
             msg = "Введите корректное число"
@@ -666,7 +870,12 @@ class BetScreen(arcade.View):
             self.start_game()
         elif key == arcade.key.ESCAPE:
             if self.show_back:
-                target = Screen1() if self.game_type == "clicker" else Screen2()
+                if self.game_type == "clicker":
+                    target = Screen1()
+                elif self.game_type == "slots":
+                    target = Screen2()
+                elif self.game_type == "fortune":
+                    target = Screen3()
             else:
                 target = TextureScreen()
             self.window.show_view(target)
@@ -763,18 +972,16 @@ class NumbersScreen(arcade.View):
 class CutsceneScreen(arcade.View):
     def __init__(self):
         super().__init__()
+        self.character = Character(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
+
         self.texts = [
-            arcade.Text("Поздравляем!", SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 60,
+            arcade.Text("Здесь должна была быть катсцена", SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 60,
                         arcade.color.GOLD, 36, anchor_x="center"),
-            arcade.Text("Вы прошли все испытания казино Ларисы Долиной!",
-                        SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20,
-                        arcade.color.WHITE, 24, anchor_x="center"),
-            arcade.Text("Ваш финальный баланс: ", SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 30,
-                        arcade.color.YELLOW, 28, anchor_x="center"),
-            arcade.Text(f"{game_state.balance:,} монет", SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 70,
-                        arcade.color.GOLD, 32, anchor_x="center"),
             arcade.Text("Нажмите ПРОБЕЛ чтобы начать новую игру",
                         SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 120,
+                        arcade.color.WHITE, 20, anchor_x="center"),
+            arcade.Text("Нажмите ESC для выхода в меню",
+                        SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 150,
                         arcade.color.WHITE, 20, anchor_x="center")
         ]
 
