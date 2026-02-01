@@ -1,0 +1,10 @@
+{
+  "balance": 1000,
+  "current_bet": 100,
+  "unlocked_screens": {
+    "screen1": true,
+    "screen2": false,
+    "screen3": false,
+    "cutscene": false
+  }
+}
